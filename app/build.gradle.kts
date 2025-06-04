@@ -28,7 +28,7 @@ android {
             )
         }
     }
-
+    
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
@@ -90,13 +90,25 @@ protobuf {
 
 dependencies {
     // gRPC dependencies (consistent versions, only OkHttp for Android)
-    implementation("io.grpc:grpc-okhttp:1.63.0")
-    implementation("io.grpc:grpc-protobuf-lite:1.63.0")
-    implementation("io.grpc:grpc-stub:1.63.0")
-
-    // Protocol Buffers (consistent version)
+    implementation("io.grpc:grpc-okhttp:1.63.0") {
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+        exclude(group = "com.google.protobuf", module = "protobuf-java-util")
+    }
+    implementation("io.grpc:grpc-protobuf-lite:1.63.0") {
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+    }
+    implementation("io.grpc:grpc-stub:1.63.0") {
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+    }
+    
+    // gRPC server for testing (only for debug builds)
+    debugImplementation("io.grpc:grpc-netty:1.63.0") {
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+    }
+    
+    // Protocol Buffers (consistent version) - only lite version
     implementation("com.google.protobuf:protobuf-javalite:3.25.3")
-
+    
     // Annotation support
     implementation("javax.annotation:javax.annotation-api:1.3.2")
 
@@ -105,9 +117,19 @@ dependencies {
     implementation(libs.material)
     implementation(libs.activity)
     implementation(libs.constraintlayout)
-
+    
     // Test dependencies
     testImplementation(libs.junit)
+    testImplementation("io.grpc:grpc-testing:1.63.0") {
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+    }
+    testImplementation("io.grpc:grpc-inprocess:1.63.0") {
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+    }
+    
+    // Android test dependencies
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
+    androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestImplementation("androidx.test:runner:1.5.2")
 }
