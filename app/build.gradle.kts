@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "org.cagnulein.grpctreadmill"
-    compileSdk = 34  // Downgraded to avoid warning
+    compileSdk = 35  // Required by AndroidX libraries
 
     defaultConfig {
         applicationId = "org.cagnulein.grpctreadmill"
@@ -131,14 +131,14 @@ dependencies {
     // Minimal annotations
     implementation("javax.annotation:javax.annotation-api:1.3.2")
 
-    // Android dependencies
-    implementation(libs.appcompat)
-    implementation(libs.material)
-    implementation(libs.activity)
-    implementation(libs.constraintlayout)
+    // Android dependencies with specific versions
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.activity:activity:1.9.2")  // Compatible with compileSdk 34/35
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     
     // Minimal test dependencies
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.ext.junit)
-    androidTestImplementation(libs.espresso.core)
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }
