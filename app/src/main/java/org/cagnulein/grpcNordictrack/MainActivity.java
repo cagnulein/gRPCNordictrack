@@ -1,40 +1,39 @@
 package org.cagnulein.grpcNordictrack;
 
+import androidx.appcompat.app.AppCompatActivity;
+
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.widget.TextView;
 import android.util.Log;
-
-import androidx.activity.EdgeToEdge;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
+import android.widget.TextView;
 
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
 import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
-import java.security.KeyFactory;
-import java.security.PrivateKey;
+import java.util.Base64;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
-import java.util.Base64;
 
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.okhttp.OkHttpChannelBuilder;
 
 import com.ifit.glassos.util.Empty;
 import com.ifit.glassos.workout.SpeedMetric;
 import com.ifit.glassos.workout.SpeedServiceGrpc;
-
-import org.cagnulein.grpctreadmill.R;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -61,15 +60,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
-
-        // Setup window insets
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
-            return insets;
-        });
 
         // Initialize UI components
         initializeUI();
@@ -77,7 +68,7 @@ public class MainActivity extends AppCompatActivity {
         // Initialize threading components
         initializeThreading();
 
-        // Initialize gRPC connection with TLS
+        // Initialize gRPC connection
         initializeGrpcConnection();
 
         // Start periodic speed updates
@@ -96,167 +87,203 @@ public class MainActivity extends AppCompatActivity {
         executorService = Executors.newSingleThreadExecutor();
     }
 
-    // Initialize gRPC connection with TLS certificates
+    // Initialize gRPC connection with TLS and client certificates (REQUIRED)
     private void initializeGrpcConnection() {
-        executorService.execute(() -> {
-            try {
-                // Create SSL socket factory with certificates
-                SSLContext sslContext = buildSslContext();
-
-                // Create gRPC channel with TLS using OkHttp (Android compatible)
-                channel = OkHttpChannelBuilder.forAddress(SERVER_HOST, SERVER_PORT)
-                        .sslSocketFactory(sslContext.getSocketFactory())
-                        .build();
-
-                // Create service stub
-                stub = SpeedServiceGrpc.newBlockingStub(channel);
-
-                // Update UI on successful connection
-                mainHandler.post(() -> {
-                    speed.setText("Speed: Connected");
-                    Log.i(TAG, "gRPC connection established successfully");
-                });
-
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to initialize gRPC connection", e);
-                mainHandler.post(() -> {
-                    speed.setText("Speed: Connection Error");
-                });
+        try {
+            // Verify certificate files exist
+            String[] requiredFiles = {"ca_cert.pem", "client_cert.pem", "client_key.pem"};
+            for (String file : requiredFiles) {
+                try {
+                    getAssets().open(file).close();
+                } catch (Exception e) {
+                    throw new RuntimeException("Required certificate file missing: " + file +
+                            ". Please add it to app/src/main/assets/");
+                }
             }
-        });
+
+            // Load certificates from assets
+            InputStream caCertStream = getAssets().open("ca_cert.pem");
+            InputStream clientCertStream = getAssets().open("client_cert.pem");
+            InputStream clientKeyStream = getAssets().open("client_key.pem");
+
+            Log.i(TAG, "Loading TLS certificates...");
+
+            // Create TLS context with client certificate authentication
+            SSLContext sslContext = createSSLContext(caCertStream, clientCertStream, clientKeyStream);
+
+            // Create channel with TLS (certificates handle authentication)
+            channel = OkHttpChannelBuilder.forAddress(SERVER_HOST, SERVER_PORT)
+                    .sslSocketFactory(sslContext.getSocketFactory())
+                    .build();
+
+            // Close certificate streams
+            caCertStream.close();
+            clientCertStream.close();
+            clientKeyStream.close();
+
+            Log.i(TAG, "gRPC connection initialized with TLS certificates");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to initialize gRPC with certificates", e);
+
+            // Don't fallback - force user to fix certificate issue
+            mainHandler.post(() -> {
+                speed.setText("Speed: Certificate Error - Check Logs");
+            });
+            throw new RuntimeException("Certificate initialization failed", e);
+        }
+
+        // Create the stub
+        stub = SpeedServiceGrpc.newBlockingStub(channel);
     }
 
-    // Build SSL context from certificate files in assets
-    private SSLContext buildSslContext() throws Exception {
-        // Load CA certificate
-        InputStream caCertStream = getAssets().open("ca_cert.pem");
-        Certificate caCert = CertificateFactory.getInstance("X.509")
-                .generateCertificate(caCertStream);
-        caCertStream.close();
+    // Create SSL context with client certificate authentication (like -cert, -key, -cacert)
+    private SSLContext createSSLContext(InputStream caCertStream, InputStream clientCertStream,
+                                        InputStream clientKeyStream) throws Exception {
 
-        // Load client certificate
-        InputStream clientCertStream = getAssets().open("client_cert.pem");
-        Certificate clientCert = CertificateFactory.getInstance("X.509")
-                .generateCertificate(clientCertStream);
-        clientCertStream.close();
+        Log.d(TAG, "Creating SSL context with client certificates...");
 
-        // Load client private key
-        InputStream clientKeyStream = getAssets().open("client_key.pem");
-        PrivateKey clientKey = loadPrivateKey(clientKeyStream);
-        clientKeyStream.close();
+        // Load CA certificate for server validation (-cacert)
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        X509Certificate caCert = (X509Certificate) cf.generateCertificate(caCertStream);
+        Log.d(TAG, "Loaded CA certificate: " + caCert.getSubjectDN());
 
         // Create trust store with CA certificate
         KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
         trustStore.load(null, null);
         trustStore.setCertificateEntry("ca", caCert);
 
-        // Create key store with client certificate and key
-        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        keyStore.load(null, null);
-        keyStore.setKeyEntry("client", clientKey, "".toCharArray(), new Certificate[]{clientCert});
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(trustStore);
 
-        // Initialize trust manager factory
-        TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(
-                TrustManagerFactory.getDefaultAlgorithm());
-        trustManagerFactory.init(trustStore);
+        // Load client certificate (-cert)
+        X509Certificate clientCert = (X509Certificate) cf.generateCertificate(clientCertStream);
+        Log.d(TAG, "Loaded client certificate: " + clientCert.getSubjectDN());
 
-        // Initialize key manager factory
-        KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(
-                KeyManagerFactory.getDefaultAlgorithm());
-        keyManagerFactory.init(keyStore, "".toCharArray());
-
-        // Create SSL context
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(keyManagerFactory.getKeyManagers(),
-                trustManagerFactory.getTrustManagers(), null);
-
-        return sslContext;
-    }
-
-    // Load private key from PEM format
-    private PrivateKey loadPrivateKey(InputStream keyStream) throws Exception {
-        // Read the key file content
-        byte[] keyBytes = new byte[keyStream.available()];
-        keyStream.read(keyBytes);
-        String keyContent = new String(keyBytes);
-
-        // Remove PEM headers and decode Base64
-        keyContent = keyContent.replace("-----BEGIN PRIVATE KEY-----", "")
+        // Parse private key (-key) - assuming PKCS#8 format
+        // Read all bytes from InputStream (compatible with API 26+)
+        byte[] keyData = readAllBytesCompat(clientKeyStream);
+        String keyString = new String(keyData, StandardCharsets.UTF_8);
+        keyString = keyString.replace("-----BEGIN PRIVATE KEY-----", "")
                 .replace("-----END PRIVATE KEY-----", "")
                 .replaceAll("\\s", "");
 
-        byte[] decodedKey = Base64.getDecoder().decode(keyContent);
-
-        // Create private key
-        PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(decodedKey);
+        byte[] keyBytes = Base64.getDecoder().decode(keyString);
+        PKCS8EncodedKeySpec keySpec = new PKCS8EncodedKeySpec(keyBytes);
         KeyFactory keyFactory = KeyFactory.getInstance("RSA");
-        return keyFactory.generatePrivate(keySpec);
+        PrivateKey privateKey = keyFactory.generatePrivate(keySpec);
+        Log.d(TAG, "Loaded private key");
+
+        // Create key store with client certificate and private key
+        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        keyStore.load(null, null);
+        keyStore.setKeyEntry("client", privateKey, "".toCharArray(), new Certificate[]{clientCert});
+
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        kmf.init(keyStore, "".toCharArray());
+
+        // Create SSL context
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+
+        Log.i(TAG, "SSL context created successfully with client certificate authentication");
+        return sslContext;
+    }
+
+    // Helper method to read all bytes from InputStream (compatible with API 26+)
+    private byte[] readAllBytesCompat(InputStream inputStream) throws Exception {
+        byte[] buffer = new byte[8192];
+        int bytesRead;
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+
+        while ((bytesRead = inputStream.read(buffer)) != -1) {
+            output.write(buffer, 0, bytesRead);
+        }
+
+        return output.toByteArray();
     }
 
     // Start periodic speed updates
     private void startSpeedUpdates() {
+        if (isUpdating) return;
+
         isUpdating = true;
+
         speedUpdateRunnable = new Runnable() {
             @Override
             public void run() {
-                if (isUpdating) {
-                    updateSpeed();
+                if (!isUpdating) return;
+
+                // Execute gRPC call in background thread
+                executorService.execute(() -> {
+                    fetchSpeedFromServer();
+
                     // Schedule next update
-                    mainHandler.postDelayed(this, UPDATE_INTERVAL_MS);
-                }
-            }
-        };
-        // Start the periodic updates
-        mainHandler.postDelayed(speedUpdateRunnable, UPDATE_INTERVAL_MS);
-    }
-
-    // Update speed from gRPC service
-    private void updateSpeed() {
-        executorService.execute(() -> {
-            try {
-                if (stub != null) {
-                    // Get speed from service
-                    SpeedMetric speedMetric = stub.getSpeed(Empty.newBuilder().build());
-                    double lastKph = speedMetric.getLastKph();
-
-                    // Update UI on main thread
-                    mainHandler.post(() -> {
-                        speed.setText(String.format("Speed: %.1f km/h", lastKph));
-                    });
-
-                    Log.d(TAG, "Speed updated: " + lastKph + " km/h");
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error getting speed from service", e);
-                // Update UI on main thread
-                mainHandler.post(() -> {
-                    speed.setText("Speed: Service Error");
+                    if (isUpdating) {
+                        mainHandler.postDelayed(speedUpdateRunnable, UPDATE_INTERVAL_MS);
+                    }
                 });
             }
-        });
+        };
+
+        // Start first update
+        mainHandler.post(speedUpdateRunnable);
+
+        Log.i(TAG, "Started periodic speed updates");
     }
 
     // Stop periodic speed updates
     private void stopSpeedUpdates() {
         isUpdating = false;
-        if (mainHandler != null && speedUpdateRunnable != null) {
+
+        if (speedUpdateRunnable != null) {
             mainHandler.removeCallbacks(speedUpdateRunnable);
         }
+
+        Log.i(TAG, "Stopped periodic speed updates");
     }
 
-    @Override
-    protected void onPause() {
-        super.onPause();
-        // Stop updates when app goes to background
-        stopSpeedUpdates();
-    }
+    // Get speed from server (equivalent to GetSpeed call with TLS client certificates)
+    private void fetchSpeedFromServer() {
+        try {
+            Log.d(TAG, "Making gRPC call with client certificates...");
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        // Resume updates when app comes to foreground
-        if (!isUpdating && stub != null) {
-            startSpeedUpdates();
+            // Create metadata for headers (equivalent to -H "client_id: com.ifit.eriador")
+            Metadata headers = new Metadata();
+            headers.put(Metadata.Key.of("client_id", Metadata.ASCII_STRING_MARSHALLER),
+                    "com.ifit.eriador");
+
+            Log.d(TAG, "Added client_id header: com.ifit.eriador");
+
+            // Create stub with metadata and client_id header
+            SpeedServiceGrpc.SpeedServiceBlockingStub stubWithHeaders = stub.withInterceptors(
+                    io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+            );
+
+            // Call GetSpeed - during this call:
+            // 1. TLS handshake occurs using our SSL context
+            // 2. Server validates our client certificate (client_cert.pem + client_key.pem)
+            // 3. We validate server certificate using CA (ca_cert.pem)
+            // 4. client_id header is sent
+            Empty request = Empty.newBuilder().build();
+
+            Log.d(TAG, "Calling GetSpeed with TLS client authentication...");
+            SpeedMetric response = stubWithHeaders.getSpeed(request);
+
+            // Update UI with received speed
+            double currentSpeed = response.getLastKph();
+
+            mainHandler.post(() -> {
+                speed.setText(String.format("Speed: %.1f km/h (TLS)", currentSpeed));
+            });
+
+            Log.d(TAG, String.format("Received speed via TLS: %.1f km/h", currentSpeed));
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to fetch speed with TLS", e);
+            mainHandler.post(() -> {
+                speed.setText("Speed: TLS Error");
+            });
         }
     }
 

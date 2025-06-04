@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "org.cagnulein.grpctreadmill"
+    namespace = "org.cagnulein.grpcNordictrack"
     compileSdk = 35  // Required by AndroidX libraries
 
     defaultConfig {
-        applicationId = "org.cagnulein.grpctreadmill"
+        applicationId = "org.cagnulein.grpcNordictrack"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
