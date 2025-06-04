@@ -87,11 +87,11 @@ public class MainActivity extends AppCompatActivity {
         executorService = Executors.newSingleThreadExecutor();
     }
 
-    // Initialize gRPC connection with TLS and client certificates (REQUIRED)
+    // Initialize gRPC connection with TLS client certificates (insecure server validation)
     private void initializeGrpcConnection() {
         try {
-            // Verify certificate files exist
-            String[] requiredFiles = {"ca_cert.pem", "client_cert.pem", "client_key.pem"};
+            // Verify required certificate files exist (ca_cert.pem not strictly needed for insecure mode)
+            String[] requiredFiles = {"client_cert.pem", "client_key.pem"};
             for (String file : requiredFiles) {
                 try {
                     getAssets().open(file).close();
@@ -101,27 +101,32 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
 
-            // Load certificates from assets
-            InputStream caCertStream = getAssets().open("ca_cert.pem");
+            // Load certificates from assets (ca_cert not used in insecure mode, but keep for compatibility)
+            InputStream caCertStream = null;
+            try {
+                caCertStream = getAssets().open("ca_cert.pem");
+            } catch (Exception e) {
+                Log.w(TAG, "ca_cert.pem not found, continuing with insecure mode");
+            }
             InputStream clientCertStream = getAssets().open("client_cert.pem");
             InputStream clientKeyStream = getAssets().open("client_key.pem");
 
-            Log.i(TAG, "Loading TLS certificates...");
+            Log.i(TAG, "Loading TLS certificates (insecure server validation mode)...");
 
-            // Create TLS context with client certificate authentication
+            // Create TLS context with client certificate authentication (insecure server validation)
             SSLContext sslContext = createSSLContext(caCertStream, clientCertStream, clientKeyStream);
 
-            // Create channel with TLS (certificates handle authentication)
+            // Create channel with TLS (client certificates used, server validation disabled)
             channel = OkHttpChannelBuilder.forAddress(SERVER_HOST, SERVER_PORT)
                     .sslSocketFactory(sslContext.getSocketFactory())
                     .build();
 
             // Close certificate streams
-            caCertStream.close();
+            if (caCertStream != null) caCertStream.close();
             clientCertStream.close();
             clientKeyStream.close();
 
-            Log.i(TAG, "gRPC connection initialized with TLS certificates");
+            Log.i(TAG, "gRPC connection initialized with client certificates (insecure server validation)");
 
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize gRPC with certificates", e);
@@ -137,26 +142,15 @@ public class MainActivity extends AppCompatActivity {
         stub = SpeedServiceGrpc.newBlockingStub(channel);
     }
 
-    // Create SSL context with client certificate authentication (like -cert, -key, -cacert)
+    // Create SSL context with client certificate authentication but insecure server validation
+    // (equivalent to -cert, -key, -cacert with -insecure flag)
     private SSLContext createSSLContext(InputStream caCertStream, InputStream clientCertStream,
                                         InputStream clientKeyStream) throws Exception {
 
-        Log.d(TAG, "Creating SSL context with client certificates...");
-
-        // Load CA certificate for server validation (-cacert)
-        CertificateFactory cf = CertificateFactory.getInstance("X.509");
-        X509Certificate caCert = (X509Certificate) cf.generateCertificate(caCertStream);
-        Log.d(TAG, "Loaded CA certificate: " + caCert.getSubjectDN());
-
-        // Create trust store with CA certificate
-        KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        trustStore.load(null, null);
-        trustStore.setCertificateEntry("ca", caCert);
-
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init(trustStore);
+        Log.d(TAG, "Creating SSL context with client certificates (insecure server validation)...");
 
         // Load client certificate (-cert)
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
         X509Certificate clientCert = (X509Certificate) cf.generateCertificate(clientCertStream);
         Log.d(TAG, "Loaded client certificate: " + clientCert.getSubjectDN());
 
@@ -182,11 +176,33 @@ public class MainActivity extends AppCompatActivity {
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(keyStore, "".toCharArray());
 
-        // Create SSL context
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+        // Create insecure trust manager (equivalent to -insecure flag)
+        // This accepts ANY server certificate without validation
+        javax.net.ssl.TrustManager[] insecureTrustManagers = new javax.net.ssl.TrustManager[] {
+                new javax.net.ssl.X509TrustManager() {
+                    @Override
+                    public void checkClientTrusted(X509Certificate[] chain, String authType) {
+                        // Accept all client certificates (not used in our case)
+                    }
 
-        Log.i(TAG, "SSL context created successfully with client certificate authentication");
+                    @Override
+                    public void checkServerTrusted(X509Certificate[] chain, String authType) {
+                        // Accept all server certificates (this is the -insecure behavior)
+                        Log.d(TAG, "Accepting server certificate without validation (insecure mode)");
+                    }
+
+                    @Override
+                    public X509Certificate[] getAcceptedIssuers() {
+                        return new X509Certificate[0];
+                    }
+                }
+        };
+
+        // Create SSL context with client certs but insecure server validation
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(kmf.getKeyManagers(), insecureTrustManagers, new SecureRandom());
+
+        Log.i(TAG, "SSL context created with client authentication but insecure server validation");
         return sslContext;
     }
 
