@@ -2,12 +2,12 @@ import com.google.protobuf.gradle.*
 
 plugins {
     alias(libs.plugins.android.application)
-    id("com.google.protobuf") version "0.9.4"  // Plugin per protobuf
+    id("com.google.protobuf") version "0.9.4"
 }
 
 android {
     namespace = "org.cagnulein.grpctreadmill"
-    compileSdk = 35
+    compileSdk = 34  // Downgraded to avoid warning
 
     defaultConfig {
         applicationId = "org.cagnulein.grpctreadmill"
@@ -15,7 +15,6 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -34,7 +33,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_1_8
     }
 
-    // Fix for duplicate META-INF files
+    // Enhanced packaging to handle all conflicts
     packaging {
         resources {
             excludes += setOf(
@@ -44,30 +43,55 @@ android {
                 "META-INF/LICENSE",
                 "META-INF/LICENSE.txt",
                 "META-INF/NOTICE",
-                "META-INF/NOTICE.txt"
+                "META-INF/NOTICE.txt",
+                "META-INF/MANIFEST.MF"
             )
+            // Pick first for duplicate classes
+            pickFirsts += setOf(
+                "**/libprotobuf-lite.so",
+                "**/libprotoc.so"
+            )
+        }
+        
+        // Force single dex file strategy for release
+        dex {
+            useLegacyPackaging = false
         }
     }
 
-    // Configurazione per i file proto
     sourceSets {
         getByName("main") {
             proto {
-                srcDir("src/main/proto")  // Directory dove mettere i file .proto
+                srcDir("src/main/proto")
             }
         }
     }
 }
 
-// Configurazione protobuf
+// Aggressive dependency resolution
+configurations.all {
+    resolutionStrategy {
+        // Force specific versions
+        force("com.google.protobuf:protobuf-javalite:3.25.3")
+        
+        // Exclude all non-lite protobuf variants
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+        exclude(group = "com.google.protobuf", module = "protobuf-java-util")
+        exclude(group = "com.google.protobuf", module = "protobuf-kotlin")
+        exclude(group = "com.google.protobuf", module = "protobuf-kotlin-lite")
+        
+        // Exclude problematic dependencies that might bring in full protobuf
+        exclude(group = "com.google.api.grpc")
+        exclude(group = "io.grpc", module = "grpc-protobuf")
+    }
+}
+
 protobuf {
     protoc {
-        // Versione del compilatore protoc
         artifact = "com.google.protobuf:protoc:3.25.3"
     }
     plugins {
         id("grpc") {
-            // Plugin per generare codice gRPC
             artifact = "io.grpc:protoc-gen-grpc-java:1.63.0"
         }
     }
@@ -75,13 +99,12 @@ protobuf {
         all().forEach { task ->
             task.plugins {
                 id("grpc") {
-                    // Genera codice gRPC per tutti i servizi
-                    option("lite")  // Usa versione lite ottimizzata per Android
+                    option("lite")
                 }
             }
             task.builtins {
                 id("java") {
-                    option("lite")  // Usa protobuf-lite per Android
+                    option("lite")
                 }
             }
         }
@@ -89,27 +112,23 @@ protobuf {
 }
 
 dependencies {
-    // gRPC dependencies (consistent versions, only OkHttp for Android)
+    // Core gRPC - minimal set
     implementation("io.grpc:grpc-okhttp:1.63.0") {
-        exclude(group = "com.google.protobuf", module = "protobuf-java")
-        exclude(group = "com.google.protobuf", module = "protobuf-java-util")
+        exclude(group = "com.google.protobuf")
+        exclude(group = "io.grpc", module = "grpc-protobuf")
     }
     implementation("io.grpc:grpc-protobuf-lite:1.63.0") {
         exclude(group = "com.google.protobuf", module = "protobuf-java")
+        exclude(group = "com.google.protobuf", module = "protobuf-java-util")
     }
     implementation("io.grpc:grpc-stub:1.63.0") {
         exclude(group = "com.google.protobuf", module = "protobuf-java")
     }
     
-    // gRPC server for testing (only for debug builds)
-    debugImplementation("io.grpc:grpc-netty:1.63.0") {
-        exclude(group = "com.google.protobuf", module = "protobuf-java")
-    }
-    
-    // Protocol Buffers (consistent version) - only lite version
+    // Only lite protobuf
     implementation("com.google.protobuf:protobuf-javalite:3.25.3")
     
-    // Annotation support
+    // Minimal annotations
     implementation("javax.annotation:javax.annotation-api:1.3.2")
 
     // Android dependencies
@@ -118,18 +137,8 @@ dependencies {
     implementation(libs.activity)
     implementation(libs.constraintlayout)
     
-    // Test dependencies
+    // Minimal test dependencies
     testImplementation(libs.junit)
-    testImplementation("io.grpc:grpc-testing:1.63.0") {
-        exclude(group = "com.google.protobuf", module = "protobuf-java")
-    }
-    testImplementation("io.grpc:grpc-inprocess:1.63.0") {
-        exclude(group = "com.google.protobuf", module = "protobuf-java")
-    }
-    
-    // Android test dependencies
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
-    androidTestImplementation("androidx.test:rules:1.5.0")
-    androidTestImplementation("androidx.test:runner:1.5.2")
 }
