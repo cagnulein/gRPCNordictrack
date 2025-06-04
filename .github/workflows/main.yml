@@ -35,11 +35,15 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       
+    - name: Clean build
+      run: ./gradlew clean
+      
     - name: Build debug APK
       run: ./gradlew assembleDebug
       
-    - name: Build release APK
-      run: ./gradlew assembleRelease
+    # Temporarily disable release build due to protobuf conflicts
+    # - name: Build release APK
+    #   run: ./gradlew assembleRelease
       
     - name: Upload debug APK
       uses: actions/upload-artifact@v4
@@ -48,14 +52,14 @@ jobs:
         path: app/build/outputs/apk/debug/*.apk
         retention-days: 30
         
-    - name: Upload release APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-apk
-        path: app/build/outputs/apk/release/*.apk
-        retention-days: 30
+    # - name: Upload release APK
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: release-apk
+    #     path: app/build/outputs/apk/release/*.apk
+    #     retention-days: 30
 
-  # Deploy APK to releases on tag push
+  # Deploy APK to releases on tag push (using debug for now)
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -84,13 +88,16 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       
-    - name: Build release APK
-      run: ./gradlew assembleRelease
+    - name: Clean build  
+      run: ./gradlew clean
+      
+    - name: Build debug APK (temporary workaround)
+      run: ./gradlew assembleDebug
       
     - name: Get APK path
       id: apk-path
       run: |
-        APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+        APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -1)
         echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
         echo "apk_name=$(basename $APK_PATH)" >> $GITHUB_OUTPUT
         
@@ -109,9 +116,11 @@ jobs:
           ## Download
           Download the APK below and install on your Android device.
           
-          **Note**: You may need to enable "Install from Unknown Sources" in your device settings.
+          **Note**: 
+          - This is a debug build due to current protobuf conflicts in release builds
+          - You may need to enable "Install from Unknown Sources" in your device settings
         draft: false
-        prerelease: false
+        prerelease: true  # Mark as prerelease since it's debug
         
     - name: Upload Release Asset
       uses: actions/upload-release-asset@v1
@@ -120,5 +129,5 @@ jobs:
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ${{ steps.apk-path.outputs.apk_path }}
-        asset_name: grpc-treadmill-${{ github.ref_name }}.apk
+        asset_name: grpc-treadmill-${{ github.ref_name }}-debug.apk
         asset_content_type: application/vnd.android.package-archive
