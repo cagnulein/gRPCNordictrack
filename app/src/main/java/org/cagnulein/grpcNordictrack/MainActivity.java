@@ -6,6 +6,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.View;
+import android.widget.Button;
 import android.widget.TextView;
 
 import java.io.InputStream;
@@ -34,25 +36,47 @@ import io.grpc.okhttp.OkHttpChannelBuilder;
 import com.ifit.glassos.util.Empty;
 import com.ifit.glassos.workout.SpeedMetric;
 import com.ifit.glassos.workout.SpeedServiceGrpc;
+import com.ifit.glassos.workout.SpeedRequest;
+import com.ifit.glassos.workout.InclineMetric;
+import com.ifit.glassos.workout.InclineServiceGrpc;
+import com.ifit.glassos.workout.InclineRequest;
+import com.ifit.glassos.workout.WattsMetric;
+import com.ifit.glassos.workout.WattsServiceGrpc;
+import com.ifit.glassos.workout.ResistanceMetric;
+import com.ifit.glassos.workout.ResistanceServiceGrpc;
+import com.ifit.glassos.workout.ResistanceRequest;
+import com.ifit.glassos.workout.CadenceMetric;
+import com.ifit.glassos.workout.CadenceServiceGrpc;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
     private static final String SERVER_HOST = "localhost"; // Change this to your server IP
     private static final int SERVER_PORT = 54321;
-    private static final int UPDATE_INTERVAL_MS = 1000; // Update every second
+    private static final int UPDATE_INTERVAL_MS = 500; // Update every 0.5 seconds
 
     // UI components
     private TextView speed;
+    private TextView inclination;
+    private TextView watts;
+    private TextView resistance;
+    private TextView cadence;
+    private Button speedMinus, speedPlus;
+    private Button inclineMinus, inclinePlus;
+    private Button resistanceMinus, resistancePlus;
 
     // Threading components
     private Handler mainHandler;
     private ExecutorService executorService;
-    private Runnable speedUpdateRunnable;
+    private Runnable metricsUpdateRunnable;
 
     // gRPC components
     private ManagedChannel channel;
-    private SpeedServiceGrpc.SpeedServiceBlockingStub stub;
+    private SpeedServiceGrpc.SpeedServiceBlockingStub speedStub;
+    private InclineServiceGrpc.InclineServiceBlockingStub inclineStub;
+    private WattsServiceGrpc.WattsServiceBlockingStub wattsStub;
+    private ResistanceServiceGrpc.ResistanceServiceBlockingStub resistanceStub;
+    private CadenceServiceGrpc.CadenceServiceBlockingStub cadenceStub;
 
     // Control flags
     private volatile boolean isUpdating = false;
@@ -71,14 +95,34 @@ public class MainActivity extends AppCompatActivity {
         // Initialize gRPC connection
         initializeGrpcConnection();
 
-        // Start periodic speed updates
-        startSpeedUpdates();
+        // Start periodic metrics updates
+        startMetricsUpdates();
     }
 
     // Initialize UI components
     private void initializeUI() {
         speed = findViewById(R.id.speed);
+        inclination = findViewById(R.id.inclination);
+        watts = findViewById(R.id.watts);
+        resistance = findViewById(R.id.resistance);
+        cadence = findViewById(R.id.cadence);
+        
+        speedMinus = findViewById(R.id.speedMinus);
+        speedPlus = findViewById(R.id.speedPlus);
+        inclineMinus = findViewById(R.id.inclineMinus);
+        inclinePlus = findViewById(R.id.inclinePlus);
+        resistanceMinus = findViewById(R.id.resistanceMinus);
+        resistancePlus = findViewById(R.id.resistancePlus);
+        
+        // Set initial text
         speed.setText("Speed: Connecting...");
+        inclination.setText("Inclination: Connecting...");
+        watts.setText("Watts: Connecting...");
+        resistance.setText("Resistance: Connecting...");
+        cadence.setText("Cadence: Connecting...");
+        
+        // Set up button listeners
+        setupButtonListeners();
     }
 
     // Initialize threading components
@@ -138,8 +182,12 @@ public class MainActivity extends AppCompatActivity {
             throw new RuntimeException("Certificate initialization failed", e);
         }
 
-        // Create the stub
-        stub = SpeedServiceGrpc.newBlockingStub(channel);
+        // Create the stubs
+        speedStub = SpeedServiceGrpc.newBlockingStub(channel);
+        inclineStub = InclineServiceGrpc.newBlockingStub(channel);
+        wattsStub = WattsServiceGrpc.newBlockingStub(channel);
+        resistanceStub = ResistanceServiceGrpc.newBlockingStub(channel);
+        cadenceStub = CadenceServiceGrpc.newBlockingStub(channel);
     }
 
     // Create SSL context with client certificate authentication but insecure server validation
@@ -219,86 +267,235 @@ public class MainActivity extends AppCompatActivity {
         return output.toByteArray();
     }
 
-    // Start periodic speed updates
-    private void startSpeedUpdates() {
+    // Start periodic metrics updates
+    private void startMetricsUpdates() {
         if (isUpdating) return;
 
         isUpdating = true;
 
-        speedUpdateRunnable = new Runnable() {
+        metricsUpdateRunnable = new Runnable() {
             @Override
             public void run() {
                 if (!isUpdating) return;
 
-                // Execute gRPC call in background thread
+                // Execute gRPC calls in background thread
                 executorService.execute(() -> {
-                    fetchSpeedFromServer();
+                    fetchAllMetricsFromServer();
 
                     // Schedule next update
                     if (isUpdating) {
-                        mainHandler.postDelayed(speedUpdateRunnable, UPDATE_INTERVAL_MS);
+                        mainHandler.postDelayed(metricsUpdateRunnable, UPDATE_INTERVAL_MS);
                     }
                 });
             }
         };
 
         // Start first update
-        mainHandler.post(speedUpdateRunnable);
+        mainHandler.post(metricsUpdateRunnable);
 
-        Log.i(TAG, "Started periodic speed updates");
+        Log.i(TAG, "Started periodic metrics updates");
     }
 
-    // Stop periodic speed updates
-    private void stopSpeedUpdates() {
+    // Stop periodic metrics updates
+    private void stopMetricsUpdates() {
         isUpdating = false;
 
-        if (speedUpdateRunnable != null) {
-            mainHandler.removeCallbacks(speedUpdateRunnable);
+        if (metricsUpdateRunnable != null) {
+            mainHandler.removeCallbacks(metricsUpdateRunnable);
         }
 
-        Log.i(TAG, "Stopped periodic speed updates");
+        Log.i(TAG, "Stopped periodic metrics updates");
     }
 
-    // Get speed from server (equivalent to GetSpeed call with TLS client certificates)
-    private void fetchSpeedFromServer() {
+    // Current values for control buttons
+    private volatile double currentSpeed = 0.0;
+    private volatile double currentIncline = 0.0;
+    private volatile double currentResistance = 0.0;
+
+    // Setup button listeners
+    private void setupButtonListeners() {
+        speedMinus.setOnClickListener(v -> adjustSpeed(-0.1));
+        speedPlus.setOnClickListener(v -> adjustSpeed(0.1));
+        
+        inclineMinus.setOnClickListener(v -> adjustIncline(-1.0));
+        inclinePlus.setOnClickListener(v -> adjustIncline(1.0));
+        
+        resistanceMinus.setOnClickListener(v -> adjustResistance(-1.0));
+        resistancePlus.setOnClickListener(v -> adjustResistance(1.0));
+    }
+
+    // Adjust speed by delta
+    private void adjustSpeed(double delta) {
+        executorService.execute(() -> {
+            try {
+                double newSpeed = Math.max(0.0, currentSpeed + delta);
+                
+                Metadata headers = createHeaders();
+                SpeedServiceGrpc.SpeedServiceBlockingStub stubWithHeaders = speedStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                
+                SpeedRequest request = SpeedRequest.newBuilder().setKph(newSpeed).build();
+                stubWithHeaders.setSpeed(request);
+                
+                Log.d(TAG, String.format("Set speed to %.1f km/h", newSpeed));
+                
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to set speed", e);
+            }
+        });
+    }
+
+    // Adjust incline by delta
+    private void adjustIncline(double delta) {
+        executorService.execute(() -> {
+            try {
+                double newIncline = Math.max(0.0, currentIncline + delta);
+                
+                Metadata headers = createHeaders();
+                InclineServiceGrpc.InclineServiceBlockingStub stubWithHeaders = inclineStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                
+                InclineRequest request = InclineRequest.newBuilder().setPercent(newIncline).build();
+                stubWithHeaders.setIncline(request);
+                
+                Log.d(TAG, String.format("Set incline to %.1f%%", newIncline));
+                
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to set incline", e);
+            }
+        });
+    }
+
+    // Adjust resistance by delta
+    private void adjustResistance(double delta) {
+        executorService.execute(() -> {
+            try {
+                double newResistance = Math.max(0.0, currentResistance + delta);
+                
+                Metadata headers = createHeaders();
+                ResistanceServiceGrpc.ResistanceServiceBlockingStub stubWithHeaders = resistanceStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                
+                ResistanceRequest request = ResistanceRequest.newBuilder().setResistance(newResistance).build();
+                stubWithHeaders.setResistance(request);
+                
+                Log.d(TAG, String.format("Set resistance to %.0f level", newResistance));
+                
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to set resistance", e);
+            }
+        });
+    }
+
+    // Create headers for gRPC calls
+    private Metadata createHeaders() {
+        Metadata headers = new Metadata();
+        headers.put(Metadata.Key.of("client_id", Metadata.ASCII_STRING_MARSHALLER),
+                "com.ifit.eriador");
+        return headers;
+    }
+
+    // Get all metrics from server
+    private void fetchAllMetricsFromServer() {
         try {
-            Log.d(TAG, "Making gRPC call with client certificates...");
+            Log.d(TAG, "Making gRPC calls for all metrics...");
 
-            // Create metadata for headers (equivalent to -H "client_id: com.ifit.eriador")
-            Metadata headers = new Metadata();
-            headers.put(Metadata.Key.of("client_id", Metadata.ASCII_STRING_MARSHALLER),
-                    "com.ifit.eriador");
-
-            Log.d(TAG, "Added client_id header: com.ifit.eriador");
-
-            // Create stub with metadata and client_id header
-            SpeedServiceGrpc.SpeedServiceBlockingStub stubWithHeaders = stub.withInterceptors(
-                    io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
-            );
-
-            // Call GetSpeed - during this call:
-            // 1. TLS handshake occurs using our SSL context
-            // 2. Server validates our client certificate (client_cert.pem + client_key.pem)
-            // 3. We validate server certificate using CA (ca_cert.pem)
-            // 4. client_id header is sent
+            Metadata headers = createHeaders();
             Empty request = Empty.newBuilder().build();
 
-            Log.d(TAG, "Calling GetSpeed with TLS client authentication...");
-            SpeedMetric response = stubWithHeaders.getSpeed(request);
+            // Fetch speed
+            try {
+                SpeedServiceGrpc.SpeedServiceBlockingStub speedStubWithHeaders = speedStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                SpeedMetric speedResponse = speedStubWithHeaders.getSpeed(request);
+                currentSpeed = speedResponse.getLastKph();
+                
+                mainHandler.post(() -> {
+                    speed.setText(String.format("Speed: %.1f km/h", currentSpeed));
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to fetch speed", e);
+                mainHandler.post(() -> speed.setText("Speed: Error"));
+            }
 
-            // Update UI with received speed
-            double currentSpeed = response.getLastKph();
+            // Fetch inclination
+            try {
+                InclineServiceGrpc.InclineServiceBlockingStub inclineStubWithHeaders = inclineStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                InclineMetric inclineResponse = inclineStubWithHeaders.getIncline(request);
+                currentIncline = inclineResponse.getLastInclinePercent();
+                
+                mainHandler.post(() -> {
+                    inclination.setText(String.format("Inclination: %.1f%%", currentIncline));
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to fetch inclination", e);
+                mainHandler.post(() -> inclination.setText("Inclination: Error"));
+            }
 
-            mainHandler.post(() -> {
-                speed.setText(String.format("Speed: %.1f km/h (TLS)", currentSpeed));
-            });
+            // Fetch watts
+            try {
+                WattsServiceGrpc.WattsServiceBlockingStub wattsStubWithHeaders = wattsStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                WattsMetric wattsResponse = wattsStubWithHeaders.getWatts(request);
+                double currentWatts = wattsResponse.getLastWatts();
+                
+                mainHandler.post(() -> {
+                    watts.setText(String.format("Watts: %.0f W", currentWatts));
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to fetch watts", e);
+                mainHandler.post(() -> watts.setText("Watts: Error"));
+            }
 
-            Log.d(TAG, String.format("Received speed via TLS: %.1f km/h", currentSpeed));
+            // Fetch resistance
+            try {
+                ResistanceServiceGrpc.ResistanceServiceBlockingStub resistanceStubWithHeaders = resistanceStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                ResistanceMetric resistanceResponse = resistanceStubWithHeaders.getResistance(request);
+                currentResistance = resistanceResponse.getLastResistance();
+                
+                mainHandler.post(() -> {
+                    resistance.setText(String.format("Resistance: %.0f level", currentResistance));
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to fetch resistance", e);
+                mainHandler.post(() -> resistance.setText("Resistance: Error"));
+            }
+
+            // Fetch cadence
+            try {
+                CadenceServiceGrpc.CadenceServiceBlockingStub cadenceStubWithHeaders = cadenceStub.withInterceptors(
+                        io.grpc.stub.MetadataUtils.newAttachHeadersInterceptor(headers)
+                );
+                CadenceMetric cadenceResponse = cadenceStubWithHeaders.getCadence(request);
+                double currentCadence = cadenceResponse.getLastStepsPerMinute();
+                
+                mainHandler.post(() -> {
+                    cadence.setText(String.format("Cadence: %.0f spm", currentCadence));
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to fetch cadence", e);
+                mainHandler.post(() -> cadence.setText("Cadence: Error"));
+            }
+
+            Log.d(TAG, "Completed all metrics fetch");
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to fetch speed with TLS", e);
+            Log.e(TAG, "Failed to fetch metrics", e);
             mainHandler.post(() -> {
-                speed.setText("Speed: TLS Error");
+                speed.setText("Speed: Error");
+                inclination.setText("Inclination: Error");
+                watts.setText("Watts: Error");
+                resistance.setText("Resistance: Error");
+                cadence.setText("Cadence: Error");
             });
         }
     }
@@ -308,7 +505,7 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
 
         // Stop periodic updates
-        stopSpeedUpdates();
+        stopMetricsUpdates();
 
         // Shutdown gRPC channel
         if (channel != null) {
